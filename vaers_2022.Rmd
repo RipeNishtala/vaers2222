@@ -1,0 +1,501 @@
+---
+title: "VAERS_22022"
+author: "Prasad Nishtala"
+date: "22/02/2022"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+## R Markdown
+
+This the document to analyse data from Jan 2021 to Dec 2021 downloaded from https://vaers.hhs.gov/data/datasets.html?.
+
+#1 **load packages and setwd**
+
+```{r echo=TRUE}
+setwd("C:/Users/pn403/OneDrive - University of Bath/Desktop/Prasad$Nishtala/vaers_2222/data")
+library(data.table)
+library(rio)
+library(anytime)
+library(readr)
+library(readxl)
+library(ggtext)
+library(glue)
+library(broom)
+library(tidyverse)
+library(tidyr)
+library(dplyr)
+library(purrr)
+options(warn = -1)
+```
+
+#2 ***create a data file for vax and change coulmn VAERS_ID to numeric**
+
+```{r echo=TRUE, warning=TRUE}
+vaers_vax1 <- import("data/2021VAERSVAX.csv")
+
+vaers_vax1$VAERS_ID <- as.numeric(vaers_vax1$VAERS_ID)
+
+vaers_vax2 <- import("data/2022VAERSVAX.csv")
+
+vaers_vax2$VAERS_ID <- as.numeric(vaers_vax2$VAERS_ID)
+
+vaers_vax <- rbind(vaers_vax1,vaers_vax2)
+
+save(vaers_vax, file = "rdata/vaers_vax.RData")
+
+```
+
+#3 ***create a data file for symptoms**
+
+```{r include=FALSE}
+vaers_symptoms1 <- import("data/2021VAERSSYMPTOMS.csv")
+
+vaers_symptoms1$VAERS_ID <- as.numeric(vaers_symptoms1$VAERS_ID)
+
+vaers_symptoms2 <- import("data/2022VAERSSYMPTOMS.csv")
+
+vaers_symptoms2$VAERS_ID <- as.numeric(vaers_symptoms2$VAERS_ID)
+
+vaers_symptoms <- rbind(vaers_symptoms1,vaers_symptoms2)
+
+save(vaers_symptoms, file = "rdata/vaers_symptoms.RData")
+```
+
+#4 **create a data file for data**
+```{r include=FALSE}
+vaers_data1 <- import("data/2021VAERSData.csv")
+
+vaers_data1$VAERS_ID <- as.numeric(vaers_data1$VAERS_ID)
+
+vaers_data2 <- import("data/2022VAERSData.csv")
+
+vaers_data2$VAERS_ID <- as.numeric(vaers_data2$VAERS_ID)
+
+vaers_data <- rbind(vaers_data1,vaers_data2)
+
+vaers_data %>% mutate_at(
+  vars(
+    "RECVDATE",
+    "RPT_DATE",
+    "DATEDIED",
+    "VAX_DATE",
+    "ONSET_DATE",
+    "TODAYS_DATE"
+  ),
+  as.Date,
+  format = "%Y-%m-%d"
+)
+  
+save(vaers_data, file = "rdata/vaers_data.RData")
+```
+
+#5 ***load all files of vaers**
+
+```{r message=TRUE, warning=TRUE, include=FALSE, paged.print=TRUE}
+setwd("C:/Users/pn403/OneDrive - University of Bath/Desktop/vaers2222/rdata")
+load("vaers_data.Rdata")
+load("vaers_symptoms.Rdata")
+load("vaers_vax.Rdata")
+
+vaers_data <- vaers_data %>%
+  rename_all(tolower) %>%
+  select(
+    -c(
+      cage_yr,
+      cage_mo,
+      datedied,
+      l_threat,
+      rpt_date,
+      hospital,
+      hospdays,
+      x_stay,
+      lab_data,
+      v_adminby,
+      splttype,
+      form_vers,
+      ofc_visit,
+      birth_defect,
+      died,
+      disable,
+      er_visit
+    )
+  )
+
+vaers_symptom <- vaers_symptoms %>%
+  rename_all(tolower) %>%
+  select(
+    -c(
+      symptomversion1,
+      symptomversion2,
+      symptomversion3,
+      symptomversion4,
+      symptomversion5
+    )
+  )
+
+vaers_vax <- vaers_vax %>%
+  rename_all(tolower) %>%
+  select(-vax_lot)
+
+```
+#6 **inner_join and get a dataset with duplicates**
+
+```{r include=FALSE}
+vaers_final<-inner_join(vaers_data, vaers_symptom,by="vaers_id") %>% 
+  inner_join(.,vaers_vax,by="vaers_id") %>% 
+  select(-v_fundby)
+```
+#7 remove duplicates -dedepulicated dataset
+
+```{r}
+vaers_final_distinct <-
+  inner_join(vaers_data, vaers_symptom, by = "vaers_id") %>%
+  inner_join(., vaers_vax, by = "vaers_id") %>%
+  select(-v_fundby) %>%
+  filter(vax_type == "COVID19") %>%
+  distinct(vaers_id, vax_date, state, age_yrs, sex, .keep_all = TRUE)
+
+```
+##8 **create table for study population**
+```{r}
+library(gtsummary)
+reset_gtsummary_theme()
+theme_gtsummary_compact()
+vaers_final_distinct %>%
+  select(c("age_yrs", "sex", "recovd", "numdays", "vax_manu")) %>%
+  rename(
+    "Age" = age_yrs,
+    "Sex" = sex,
+    "Recovered" = recovd,
+    "Days to symptom onset" = numdays,
+    "Vaccine manufacturer" = vax_manu
+  ) %>%
+  tbl_summary(by = "Vaccine manufacturer") %>%
+  add_stat_label() %>%
+  add_overall() %>%
+  bold_labels() %>%
+  as_gt() %>%
+  gt::tab_header("Characteristics of the study population")
+```
+
+#9   **get total adrs by vaccine type**
+```{r}
+vaers_total_adrs <- vaers_final_distinct %>%
+  dplyr::filter(vax_manu=="MODERNA") %>% 
+  select(vaers_id,symptom1:symptom5) %>%
+  pivot_longer(-vaers_id,names_to = "symptoms", values_to = "adr") %>%
+  distinct(vaers_id, symptoms, adr, .keep_all = TRUE) %>%
+  count(adr, sort = TRUE)
+```
+#10 plot adrs
+
+```{r setup, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+#read_chunk('C:/Users/pn403/OneDrive - University of #Bath/Desktop/minimalR/vaers_2222/plot_adrs_moderna_5000.R')
+library(ggplot2)
+library(shadowtext)
+library(grid)
+
+vaers_total_adrs$adr <- as.factor(vaers_total_adrs$adr)
+plt <- vaers_total_adrs %>%
+  filter(!adr=="") %>%
+  filter(n>5000) %>%
+ggplot+
+  geom_col(aes(x=n, y=adr), width = 0.9)
+
+plt <- plt +
+  scale_x_continuous(
+    limits = c(0, 50000),
+    breaks = seq(5000, 50000, by = 10000),
+    expand = c(0, 0), # The horizontal axis does not extend to either side
+    position = "top"  # Labels are located on the top
+  ) +
+  # The vertical axis only extends upwards
+  scale_y_discrete(expand = expansion(add = c(0, 0.5))) +
+  theme(
+    # Set background color to white
+    panel.background = element_rect(fill = "white"),
+    # Set the color and the width of the grid lines for the horizontal axis
+    panel.grid.major.x = element_line(color = "#A8BAC4", size = 0.3),
+    # Remove tick marks by setting their length to 0
+    axis.ticks.length = unit(0, "mm"),
+    # Remove the title for both axes
+    axis.title = element_blank(),
+    # Only left line of the vertical axis is painted in black
+    axis.line.y.left = element_line(color = "black"),
+    # Remove labels from the vertical axis
+    axis.text.y = element_blank(),
+    # But customize labels for the horizontal axis
+    axis.text.x = element_text(family = "sans", size = 12)
+  )
+
+
+plt2 <- plt +
+  geom_shadowtext(
+    #data = subset(data, n < 5000),
+    aes(n, y = adr, label = adr),
+    hjust = 0,
+    nudge_x = 0.3,
+    bg.colour = "white",
+    bg.r = 0.05,
+    family = "sans",
+    size = 2.5
+  ) +
+  geom_text(
+    #data = subset(data, n >= 5000),
+    aes(0, y = adr, label = adr),
+    hjust = 0,
+    nudge_x = 0.3,
+    colour = "white",
+    family = "sans",
+    size = 2.5
+  )
+
+
+plt3 <- plt2 +
+  labs(
+    title = "Moderna",
+    subtitle = "Adverse drug events > 5000 from case reports, 2021-2022"
+  ) +
+  theme(
+    plot.title = element_text(
+      family = "sans",
+      face = "bold",
+      size = 22
+    ),
+    plot.subtitle = element_text(
+      family = "sans",
+      size = 20
+    )
+  )
+
+# Make room for annotations
+plt4 <- plt3 +
+  theme(
+    plot.margin = margin(0, 0, 0, 0.0, "npc")
+  )
+
+# Print the ggplot2 plot
+
+# Add horizontal line on top
+# It goes from x = 0 (left) to x = 1 (right) on the very top of the chart (y = 1)
+# You can think of 'gp' and 'gpar' as 'graphical parameters'.
+# There we indicate the line color and width
+grid.lines(
+  x = c(0, 1),
+  y = 1,
+  gp = gpar(col = "#e5001c", lwd = 4)
+)
+
+# Add rectangle on top-left
+# lwd = 0 means the rectangle does not have an outer line
+# 'just' gives the horizontal and vertical justification
+grid.rect(
+  x = 0,
+  y = 1,
+  width = 0.05,
+  height = 0.025,
+  just = c("left", "top"),
+  gp = gpar(fill = "#e5001c", lwd = 0)
+)
+
+print(plt4)
+
+
+```
+
+#11 **chills as example to get some exploratory values**
+
+```{r}
+chills<-vaers_final_distinct %>% 
+  select(vaers_id,symptom1:symptom5,vax_type) %>% 
+  filter_at(vars(symptom1:symptom5), any_vars(. == 'Chills')) %>% 
+  count () %>% 
+  print()
+```
+#12
+```{r}
+chills_by_vaxmanu <- vaers_final_distinct %>%
+  select(symptom1:symptom5, vax_manu) %>%
+  filter_at(vars(symptom1:symptom5), any_vars(. == "Chills")) %>%
+  group_by(vax_manu) %>%
+  count () %>%
+  print()
+```
+
+#13**total adrs**
+
+```{r}
+  vaers_final_distinct <-
+  inner_join(vaers_data, vaers_symptom, by = "vaers_id") %>%
+  inner_join(., vaers_vax, by = "vaers_id") %>%
+  select(-v_fundby) %>%
+  filter(vax_type == "COVID19") %>%
+  distinct(vaers_id, vax_date, state, age_yrs, sex, .keep_all = TRUE) %>%
+  count() %>%
+  pull(n[]) %>%
+  as.integer() %>%
+  print()
+
+```
+#14***stats**
+##*a number of adrs of interest with vaccine type*
+```{r echo=TRUE, error=TRUE, message=FALSE, warning=FALSE}
+a<-chills_by_vaxmanu %>% filter(vax_manu=="MODERNA")
+a<-sum(a$n)
+print(a)
+
+##number of other adrs with vaccine type ( b value)
+vaers_final_distinct <-
+  inner_join(vaers_data, vaers_symptom, by = "vaers_id") %>%
+  inner_join(., vaers_vax, by = "vaers_id") %>%
+  select(-v_fundby) %>%
+  filter(vax_type == "COVID19") %>%
+  distinct(vaers_id, vax_date, state, age_yrs, sex, .keep_all = TRUE)
+
+  b <- vaers_final_distinct %>% 
+  select(symptom1:symptom5, vax_manu) %>%
+  filter(vax_manu == "MODERNA") %>%
+  filter(if_all(everything(), ~ !str_detect(., "Chills"))) %>%
+  group_by(vax_manu) %>%
+  count () %>%
+  pull(n) %>%
+  print()
+
+##number if adrs of interest with all other vaccine type ( c value)
+
+c<-chills_by_vaxmanu %>% filter(vax_manu!="MODERNA")
+c<-sum(c$n)
+print(c)
+
+
+##number of all other adrs with all other vaccines types except adr of interest (d value)
+
+d <- vaers_final_distinct %>%
+  select(symptom1:symptom5, vax_manu) %>%
+  filter(vax_manu != "MODERNA") %>%
+  filter(if_all(everything(), ~ !str_detect(., "Chills"))) %>%
+  # group_by(vax_manu) %>%
+  count () %>%
+  pull(n) %>%
+  print()
+```
+
+##plot for inflammation >25
+```{r echo=TRUE, error=TRUE, message=FALSE, warning=FALSE}
+vaers_total_adrs$adr <- as.factor(vaers_total_adrs$adr)
+plt <- vaers_total_adrs %>%
+  filter(!adr=="") %>%
+  filter(grepl("itis",adr)& n>25) %>%
+ggplot+
+  geom_col(aes(x=n, y=adr), width = 0.8)
+
+plt <- plt +
+  scale_x_continuous(
+    limits = c(0, 1000),
+    breaks = seq(0, 1000, by = 100),
+    expand = c(0, 0), # The horizontal axis does not extend to either side
+    position = "top"  # Labels are located on the top
+  ) +
+  # The vertical axis only extends upwards
+  scale_y_discrete(expand = expansion(add = c(0, 0.5))) +
+  theme(
+    # Set background color to white
+    panel.background = element_rect(fill = "white"),
+    # Set the color and the width of the grid lines for the horizontal axis
+    panel.grid.major.x = element_line(color = "#A8BAC4", size = 0.3),
+    # Remove tick marks by setting their length to 0
+    axis.ticks.length = unit(0, "mm"),
+    # Remove the title for both axes
+    axis.title = element_blank(),
+    # Only left line of the vertical axis is painted in black
+    axis.line.y.left = element_line(color = "black"),
+    # Remove labels from the vertical axis
+    axis.text.y = element_blank(),
+    # But customize labels for the horizontal axis
+    axis.text.x = element_text(family = "sans", size = 12)
+  )
+
+plt
+
+plt2 <- plt +
+  geom_shadowtext(
+    #data = subset(data, n < 5000),
+    aes(n, y = adr, label = adr),
+    hjust = 0,
+    nudge_x = 0.3,
+    bg.colour = "white",
+    bg.r = 0.05,
+    family = "sans",
+    size = 2.5
+  ) +
+  geom_text(
+    #data = subset(data, n >= 5000),
+    aes(0, y = adr, label = adr),
+    hjust = 0,
+    nudge_x = 0.3,
+    colour = "white",
+    family = "sans",
+    size = 2.5
+  )
+
+plt2
+
+plt3 <- plt2 +
+  labs(
+    title = "Moderna",
+    subtitle = "Adverse drug events related to inflammation n>25 from case reports, 2021"
+  ) +
+  theme(
+    plot.title = element_text(
+      family = "sans",
+      face = "bold",
+      size = 22
+    ),
+    plot.subtitle = element_text(
+      family = "sans",
+      size = 18
+    )
+  )
+plt3
+
+
+# Make room for annotations
+plt4 <- plt3 +
+  theme(
+    plot.margin = margin(0.09, 0, 0.02, 0.02, "npc")
+  )
+
+# Print the ggplot2 plot
+plt4
+
+# Add horizontal line on top
+# It goes from x = 0 (left) to x = 1 (right) on the very top of the chart (y = 1)
+# You can think of 'gp' and 'gpar' as 'graphical parameters'.
+# There we indicate the line color and width
+grid.lines(
+  x = c(0, 1),
+  y = 1,
+  gp = gpar(col = "#e5001c", lwd = 4)
+)
+
+# Add rectangle on top-left
+# lwd = 0 means the rectangle does not have an outer line
+# 'just' gives the horizontal and vertical justification
+grid.rect(
+  x = 0,
+  y = 1,
+  width = 0.05,
+  height = 0.025,
+  just = c("left", "top"),
+  gp = gpar(fill = "#e5001c", lwd = 0)
+)
+
+plt4
+
+
+```
+
